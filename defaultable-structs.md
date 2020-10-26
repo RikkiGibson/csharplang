@@ -20,7 +20,7 @@ public class C1
     public void Init(string prop) => Prop = prop;
 }
 
-// The easiest fix (if the type should not change) is to add a constructor
+// The easiest fix (if the field type should not change) is to add a constructor
 public class C2
 {
     public string Prop { get; set; }
@@ -43,7 +43,7 @@ public partial class C3
 ```
 
 ## Disclaimer:
-This proposal may prove to be impractical/undesirable. But it feels like there is something here.
+This proposal may prove to be impractical or overly complex. But it feels like there is something here.
 
 Also, the phrase "by default" is confusing to use in this context, so consider saying "unless explicitly specified" or another similar phrase. :)
 
@@ -67,13 +67,20 @@ public partial class C3
     // This constructor is identical to the implicit constructor that is emitted when no explicit constructors are present.
     // We use the 'default' modifier to indicate that the constructor returns an instance that may not be fully initialized.
     //
-    // Note: this is not set in stone. For example, we may require the user to specify a 'default' modifier on the class to make the implicit constructor 'default' in order to avoid changing existing field warning behaviors.
+    // Note: this is not set in stone. For example, we may require the user to specify a 'default' modifier on the class to make the implicit constructor 'default' in order to avoid changing already shipped field warning behaviors.
     public default C3() { }
 
     // A constructor which doesn't have the 'default' modifier returns a non-defaultable instance.
     public C3(string prop) => Prop = prop; // ok
     public C3(object obj) { } // warning CS8618: non-nullable property Prop is not initialized.
 }
+```
+
+### Object creations may create defaultable or non-defaultable instances
+```cs
+var c3_1 = new C3~(); // ok. creates a defaultable instance without warnings.
+var c3_2 = new C3(); // warning: non-nullable property 'Prop' was not initialized.
+var c3_3 = new C3() { Prop = "abc" }; // ok.
 ```
 
 ### The `default` literal and `new()` on structs returns a defaultable value
@@ -267,22 +274,37 @@ public class ListNode2<T>
 {
     public T Value { get; }
     public ListNode2<T> Next { get; } // to terminate the list, the "Next" node points to itself
+
+    public static ListNode2<int> CreateList1()
+    {
+        return new ListNode2<int>
+        {
+            Value = 1,
+            Next = new ListNode2<int> // warning: non-nullable field Value is not initialized.
+            {
+                Value = 2
+            }
+        };
+        // Suppose this literal were 5 or 10 or 100 levels deep:
+        // we probably pick the same max depth as the nullable feature (5).
+        // after that depth, we just don't analyze whether all fields are initialized.
+    }
 }
 ```
-This is only really tricky if the recursive fields are non-nullable and not initialized by the constructor. In practice we are likely to find that many recursive or mutually recursive type hierarchies use nullable reference types.
+This is only really tricky if the recursive fields are non-nullable and not initialized by the constructor. In practice we are likely to find that many recursive or mutually recursive type hierarchies use nullable reference types along the recursive path.
 
-However, the `ListNode2` scenario is an open question. We cannot plumb down indefinitely deep into containers of defaultable types to infer whether the defaultable members have been initialized. I think in this case, we must require such a recursive type to have methods with defaultability postconditions. The compiler would not be able to fully check the implementations of these methods for correctness.
+However, the `ListNode2` scenario is an open question. We cannot plumb down indefinitely deep into containers of defaultable types to infer whether the defaultable members have been initialized. We also probably can't handle aliasing in the case of complex cyclical structures. I think in this case, we must require the user of such a recursive type to use nullable-suppression or for the type to have methods with defaultability postconditions. The compiler would not be able to fully check the implementations of these methods for correctness.
 
 ### Determining the set of members to track for defaultability
 - This is easy to do *within* a constructor, but not so easy to do when you can only look at the public surface.
-- We want to preserve encapsulation. Users should be able to implement the property in a variety of different ways.
+- We want to preserve encapsulation. Users should be able to implement the property in a variety of different ways and change that implementation without breaking their users.
+- Another tricky aspect is that structs really have a "soft" encapsulation that we may need to account for. Its fields are part of the public contract even if they are not publicly accessible because size or layout(?) changes can break consumers.
 ```cs
 // TODO: we need rules for how to decide whether explicitly implemented properties must be initialized.
 ```
 
-### 
-
 ### Defaultable constructors and the 'new()' constraint
+A non-defaultable type meets the `new` constraint only if its parameterless constructor produces a non-defaultable instance.
 ```cs
 public partial class C3
 {
@@ -342,8 +364,81 @@ Intuitively it seems like a non-defaultable type argument `TNonDefault` should o
 In effect, this means that structs that contain non-nullable reference types can *only* meet the `new()` constraint if the type argument is defaultable. (This will change if we change the language to allow explicit parameterless constructors on value types.)
 
 ### Types can implement interfaces "defaultably"
+Usually it's expected that an instance needs to be fully initialized before it can safely be converted to interface and used. However, we may want to support a notion of "defaultable implementation" which enforces that all members implementing the interface members are defaultable:
 
-### "defaultable" construction (to move enforcement here or there?)
+```cs
+#nullable enable
+interface I
+{
+    string Prop { get; }
+}
+
+class C1 : I~ // C1 implements I "defaultably". In other words, C1~ implements I
+{
+    // warning: Defaultability of C1.Prop doesn't match implicitly implemented interface member I~.Prop
+    public string Prop { get => this.ToString(); set { } }
+}
+
+class C2 : I~
+{
+    // ok
+    public default string Prop { get => this.ToString(); set { } }
+
+    static void UseC2(C2~ c2)
+    {
+        I i = c2; // ok
+    }
+}
+
+class C1 : I
+{
+    public string Prop { get => this.ToString(); set { } }
+
+    static void UseC1(C1~ c1)
+    {
+        I i = c1; // warning: c1 of type C1~ doesn't implement I. Conversion is only possible if c1 is found to be non-default by flow analysis.
+        if (c1.Prop is not null)
+        {
+            I i1 = c1; // ok
+        }
+    }
+}
+```
+
+### Combining defaultable and nullable type annotations
+At a glance this looks just a little funky, but it seems like these features should be able to compose.
+```cs
+#nullable enable
+public class C
+{
+    public string Prop { get; set; }
+    public void M() => Prop.ToString();
+
+    public static void M1(C? c)
+    {
+        if (c != null)
+        {
+            // c is assumed to be non-null and non-default here
+            C.M(); // ok
+        }
+    }
+    
+    public static void M2(C~? c)
+    {
+        if (c != null)
+        {
+            // c is assumed to be non-null but still potentially defaultable here
+            c.M(); // warning: c may not be fully initialized
+        }
+
+        if (c?.Prop != null)
+        {
+            // c is assumed to be non-null and non-default here
+            c.M(); // ok
+        }
+    }
+}
+```
 
 ### "required" modifier on properties/fields to participate in defaultability? (couldn't rely on nullable anlaysis for this)
 
