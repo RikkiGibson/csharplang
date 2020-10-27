@@ -43,21 +43,21 @@ public partial class C3
 ```
 
 ## Disclaimer:
-This proposal may prove to be impractical or overly complex. But it feels like there is something here.
+This proposal may prove to be impractical or overly complex. But there may be something here that can at least be taken away and adapted for whatever proposal C# language design finally adopts to address initialization scenarios.
 
-Also, the phrase "by default" is confusing to use in this context, so consider saying "unless explicitly specified" or another similar phrase. :)
+Also, the phrase "by default" is confusing to use in this context, so consider saying "unless otherwise specified" or another similar phrase. :)
 
 ### Feature goals:
-- Provide a desirable set of "out-of-the-box" behaviors which work for analyzing legacy POCOs and use cases where objects mostly only have a 'constructed, but not fully initialized' defaultable phase, and a 'fully initialized' non-defaultable phase.
-- The feature is primarily for helping the user to ensure that object fields contain values that are compatible with the field types.
-- The feature will have gaps which will not address certain people's use cases. For such use cases, it will be reasonably easy to suppress resulting warnings.
+- Provide a desirable set of "out-of-the-box" behaviors which work for analyzing legacy POCOs, as well as nominal records, as well as use cases where objects mostly only have a 'constructed, but not fully initialized' defaultable phase, and a 'fully initialized' non-defaultable phase.
+- Help the user to ensure that object fields contain values that are compatible with the field types.
+- Expect that there will be gaps that do not address certain people's use cases. For such use cases, it will be reasonably easy to suppress any warnings.
 
 ### Feature non-goals:
 - Language support for "post-construction" checks after nominal initialization, i.e. "are these fields mutually compatible with each other" checks.
-- Language support for "null object" pattern, a la Unity. **However, this may end up falling out of `MyType~` and defaultability postconditions.**
+- Language support for "null object" pattern, a la Unity. **However, this may end up being adaptable from defaultable annotations and and defaultability postconditions.**
 - Hard and fast checks, which for example would give a runtime error if new non-nullable properties are added to a type such that new warnings would be introduced if we recompile.
-- Helping users ensure that a nullable reference type property is explicitly specified in an object initializer or in flow analysis, etc. Sorry, if it's nullable, we don't help you (at least not out of the box.)
-- Intricate preconditions for method parameters, e.g.: "fields A, B, and nested field C.D" must be initialized before passing the instance to this method".
+- Helping users ensure that a nullable reference type property is explicitly specified in an object initializer or is always assigned in flow analysis, etc.
+- Intricate preconditions for method parameters, e.g.: "field A, field B, and nested field C.D" must be initialized before passing the instance to this method".
 
 ### Constructors can return non-defaultable or defaultable instances
 ```cs
@@ -77,6 +77,10 @@ public partial class C3
 ```
 
 ### Object creations may create defaultable or non-defaultable instances
+It's desirable to make it so uninitialized property warnings are close to the object creation site. For example, we don't necessarily want to let you create an object, then have you use it 100 lines later and warn "sorry, it's not fully initialized". Instead, we can have a "common" path where object creations either:
+- use a non-defaultable constructor and continue to work as they always have
+- use a defaultable constructor with no `~` annotation, and compiler enforces that non-nullable members are initialized
+- use a defaultable constructor with an `~` annotation, and defer any potential initialization warnings until use.
 ```cs
 var c3_1 = new C3~(); // ok. creates a defaultable instance without warnings.
 var c3_2 = new C3(); // warning: non-nullable property 'Prop' was not initialized.
@@ -183,10 +187,14 @@ public partial class C3
 ```
 
 ### Readonly fields are not assumed to be initialized by the constructor
+Explicitly implemented 'init' accessors can write to these fields, and therefore we don't assume the constructor initializes them.
+However, it feels like if the constructor *doesn't* write to these fields,
 ```cs
-// ... TODO: fill in this example
-// Explicitly implemented 'init' accessors can write to these fields,
-// therefore we don't assume the constructor initializes them.
+class C
+{
+    private readonly string _prop;
+    public string Prop { get => _prop; init => _prop = value; }
+}
 ```
 
 ### Methods can specify defaultability postconditions on their parameters
@@ -295,14 +303,6 @@ This is only really tricky if the recursive fields are non-nullable and not init
 
 However, the `ListNode2` scenario is an open question. We cannot plumb down indefinitely deep into containers of defaultable types to infer whether the defaultable members have been initialized. We also probably can't handle aliasing in the case of complex cyclical structures. I think in this case, we must require the user of such a recursive type to use nullable-suppression or for the type to have methods with defaultability postconditions. The compiler would not be able to fully check the implementations of these methods for correctness.
 
-### Determining the set of members to track for defaultability
-- This is easy to do *within* a constructor, but not so easy to do when you can only look at the public surface.
-- We want to preserve encapsulation. Users should be able to implement the property in a variety of different ways and change that implementation without breaking their users.
-- Another tricky aspect is that structs really have a "soft" encapsulation that we may need to account for. Its fields are part of the public contract even if they are not publicly accessible because size or layout(?) changes can break consumers.
-```cs
-// TODO: we need rules for how to decide whether explicitly implemented properties must be initialized.
-```
-
 ### Defaultable constructors and the 'new()' constraint
 A non-defaultable type meets the `new` constraint only if its parameterless constructor produces a non-defaultable instance.
 ```cs
@@ -406,7 +406,7 @@ class C1 : I
 ```
 
 ### Combining defaultable and nullable type annotations
-At a glance this looks just a little funky, but it seems like these features should be able to compose.
+At a glance `C~?` looks just a little funky, but it seems like these features should be able to compose.
 ```cs
 #nullable enable
 public class C
@@ -422,7 +422,7 @@ public class C
             C.M(); // ok
         }
     }
-    
+
     public static void M2(C~? c)
     {
         if (c != null)
@@ -442,7 +442,68 @@ public class C
 
 ### "required" modifier on properties/fields to participate in defaultability? (couldn't rely on nullable anlaysis for this)
 
+## Determining the set of members to track for defaultability
+**This is probably the biggest roadblock that would make this feature non-viable. (particularly on class types)**
+- This is easy to do *within* a constructor, but not so easy to do when you can only look at the public surface.
+- It's not obvious that there's a *right* way to do this--but it feels like there should exist a set of *reasonable defaults* that we can provide along with *"knobs" (modifiers, attributes) for tuning those defaults*.
+- We want to preserve encapsulation. Users should be able to implement the property in a variety of different ways and change that implementation without breaking their users. Class types must be able to add or remove private non-nullable fields at will without impacting consumers.
+- It's worth noting that structs really have a "soft" encapsulation that we may need to account for. Its fields are part of the public contract even if they are not publicly accessible because size or layout(?) changes can break consumers. Thus it's easier for the compiler to know via flow analysis when a struct type has been fully initialized compared to a class type. Also note that the language has precedent for using flow analysis to determine initialization, because a struct variable becomes [definitely assigned](https://github.com/dotnet/csharplang/blob/master/spec/variables.md#definite-assignment) if all the fields are definitely assigned.
+
+### Determining tracked members based on accessibility:
+I don't necessarily like this approach because it is complex and causes unpleasant differences in behavior depending on the context in which a defaultable type is used or the accessibility of a defaultable member.
+<details markdown="1">
+    <summary>Nevertheless, it can be found here.</summary>
+Which members a 'default' constructor must initialize depends on the accessibility of the constructor. Doesn't that also mean that the set of members assumed to be initialized when analyzing a 'default' method varies based on accessibility of the method? And the set of members assumed initialized when analyzing a parameter of the defaultable type would vary depending on what members of the parameter the other method can access.
+```cs
+// Here a type has some internal members which are necessary for the type to really be initialized.
+public class C
+{
+    private string _field1;
+
+    internal string Field2 { get; }
+
+    public string Field3 { get; set; }
+
+    // each defaultable constructor is responsible for initializing any less accessible members.
+    public default C(string field1, string field2)
+    {
+        _field1 = field1;
+        Field2 = field2;
+    }
+
+    internal default C(string field1)
+    {
+        _field1 = field1;
+    }
+
+    private default C() { } // ok
+
+
+    // receiver might be defaultable, from the public perspective..?
+    public default void M()
+    {
+        _field1.ToString(); // ok
+        Field2.ToString(); // ok
+        Field3.ToString(); // warn
+    }
+
+    internal default void M()
+    {
+        _field1.ToString(); // ok
+        Field2.ToString(); // warn?
+        Field3.ToString(); // warn?
+    }
+
+    // What about when C~ is simply passed as a parameter?
+    // It would depend on how accessible C~ is at the usage site.
+    // That doesn't feel good.
+}
+```
+</details>
+
 ---
+
+Below is another version of essentially the same document, but oriented specifically around structs. After I tinkered with the concept for a while I started to wonder if it was also applicable to classes.
 
 Some folks want to initialize their stuff in constructors. Some folks want to initialize their stuff using object initializers. Some folks want to initialize their stuff by new-ing up an instance or pulling it out of a pool and calling an Init() method. 
 
@@ -466,8 +527,6 @@ public readonly struct ImmutableArray<T>
     public int Length => _array.Length;
 }
 ```
-
-In the above example `
 
 However, it isn't clear that this explicit annotation to opt-in to "non-defaultability" is necessary or desirable. Instead, the language could focus on "filling the gaps" of the nullable reference types in combination with structs, by introducing a new set of annotations and analysis specifically around structs that *contain* non-nullable references. .NET library developers understand (or are bound to find out) that all fields on a struct, no matter their accessibility, are still effectively part of the public contract of a struct, and that changing them can result in binary compatibility breaks, for example.
 
