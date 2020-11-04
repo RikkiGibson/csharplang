@@ -304,18 +304,22 @@ This is only really tricky if the recursive fields are non-nullable and not init
 However, the `ListNode2` scenario is an open question. We cannot plumb down indefinitely deep into containers of defaultable types to infer whether the defaultable members have been initialized. We also probably can't handle aliasing in the case of complex cyclical structures. I think in this case, we must require the user of such a recursive type to use nullable-suppression or for the type to have methods with defaultability postconditions. The compiler would not be able to fully check the implementations of these methods for correctness.
 
 ### Defaultable constructors and the 'new()' constraint
-A non-defaultable type meets the `new` constraint only if its parameterless constructor produces a non-defaultable instance.
+In order to prevent safety issues (i.e. `new T()` in a generic context then consuming it in the calling context), a non-defaultable type meets the `new` constraint only if its parameterless constructor produces a non-defaultable instance.
+
+This could be a problem for structs containing non-nullable reference types, because `T : struct` implicitly includes `T : new()`. We may want to add new type parameter constraints `T : struct~` and `T : new~()`. Similar to the `T : class?` constraint, a type whose parameterless constructor produces either a defaultable or non-defaultable instance would be accepted.
 ```cs
 public partial class C3
 {
-    public static T Factory<T>() where T : new() => new T();
+    public static T Factory1<T>() where T : new() => new T();
+    public static T Factory2<T>() where T : new~() => new T~();
 
     public static void UseFactory()
     {
         // warning: 'C3' cannot be used as a type argument for 'T' in 'C3.Factory<T>(T)' because its parameterless constructor does not produce a fully initialized instance. Consider using the type argument 'C3~' instead.
-        var c3_1 = Factory(new C3());
-
-        var c3_2 = Factory<C3~>(new C3()); // ok
+        var c3_1 = Factory1<C3>();
+        var c3_2 = Factory1<C3~>(); // ok
+        var c3_3 = Factory2<C3>(); // ok, 'new C3()' is compatible with 'new T~'
+        var c3_4 = Factory2<C3~>(); // ok
     }
 }
 
@@ -327,9 +331,8 @@ public class C4
 
     public static void UseFactory()
     {
-        var c3_1 = Factory(new C4());
-
-        var c3_2 = Factory<C3~>(new C4());
+        var c3_1 = Factory<C3>(); // implicitly allowed due to absence of non-nullable reference fields?
+        var c3_2 = Factory<C3~>(); // ok
     }
 }
 
@@ -337,12 +340,23 @@ public struct S1
 {
     public string Prop { get; set; }
 
-    public static T Factory<T>() where T : new() => new T();
+    public static T Factory1<T>() where T : new() => new T();
+    public static T Factory2<T>() where T : new~() => new T~(); // is the ~ needed?
+
+    public static T Factory3<T>() where T : struct => new T();
+    public static T Factory4<T>() where T : struct~ => new T~();
 
     public static void M()
     {
-        var s1_1 = Factory(default(S1)); // warning: 'S1' cannot be used as a type argument for 'T' in 'S1.Factory<T>(T)' because its parameterless constructor does not produce a fully initialized instance. Consider using the type argument 'S1~' instead.
-        var s1_2 = Factory<S1~>(default(S1)); // ok
+        var s1_1 = Factory1<S1>(); // warning: 'S1' cannot be used as a type argument for 'T' in 'S1.Factory<T>(T)' because its parameterless constructor does not produce a fully initialized instance. Consider using the type argument 'S1~' instead.
+        var s1_2 = Factory1<S1~>(); // ok
+        var s1_3 = Factory2<S1>(); // ok
+        var s1_4 = Factory2<S1~>(); // ok
+
+        var s1_5 = Factory3<S1>(); // warning: 'S1' cannot be used as a type argument for 'T' in 'S1.Factory<T>(T)' because its parameterless constructor does not produce a fully initialized instance. Consider using the type argument 'S1~' instead.
+        var s1_6 = Factory3<S1~>(); // ok
+        var s1_7 = Factory4<S1>(); // ok
+        var s1_8 = Factory4<S1~>(); // ok
     }
 }
 
@@ -440,11 +454,35 @@ public class C
 }
 ```
 
+### Writing defaultable values to property setters
+Do we want to support scenarios where defaultable values can be written to non-defaultable properties, and then initialized to meet non-defaultability requirements before use?
+```cs
+var inner = new Inner~();
+var outer = new Outer~() { Inner = inner };
+outer.Inner.Prop = "a";
+UseOuter(outer);
+
+void UseOuter(Outer outer) { }
+
+public class Inner
+{
+    public string Prop { get; set; }
+}
+
+public class Outer
+{
+    public Inner Inner { get; set; }
+}
+```
+It feels pretty dicey to bake in the notion that we can assume property setters will not access nested members on the value, for example.
+
+
 ### "required" modifier on properties/fields to participate in defaultability? (couldn't rely on nullable anlaysis for this)
 
 ## Determining the set of members to track for defaultability
 **This is probably the biggest roadblock that would make this feature non-viable. (particularly on class types)**
 - This is easy to do *within* a constructor, but not so easy to do when you can only look at the public surface.
+- It's very desirable to have symmetry between "required-ness" of value types and reference types, and it's not clear how to achieve that with this proposal.
 - It's not obvious that there's a *right* way to do this--but it feels like there should exist a set of *reasonable defaults* that we can provide along with *"knobs" (modifiers, attributes) for tuning those defaults*.
 - We want to preserve encapsulation. Users should be able to implement the property in a variety of different ways and change that implementation without breaking their users. Class types must be able to add or remove private non-nullable fields at will without impacting consumers.
 - It's worth noting that structs really have a "soft" encapsulation that we may need to account for. Its fields are part of the public contract even if they are not publicly accessible because size or layout(?) changes can break consumers. Thus it's easier for the compiler to know via flow analysis when a struct type has been fully initialized compared to a class type. Also note that the language has precedent for using flow analysis to determine initialization, because a struct variable becomes [definitely assigned](https://github.com/dotnet/csharplang/blob/master/spec/variables.md#definite-assignment) if all the fields are definitely assigned.
