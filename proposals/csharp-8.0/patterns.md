@@ -298,6 +298,28 @@ A switch expression is said to be *exhaustive* if some arm of the switch express
 
 At runtime, the result of the *switch_expression* is the value of the *expression* of the first *switch_expression_arm* for which the expression on the left-hand-side of the *switch_expression* matches the *switch_expression_arm*'s pattern, and for which the *case_guard* of the *switch_expression_arm*, if present, evaluates to `true`. If there is no such *switch_expression_arm*, the *switch_expression* throws an instance of the exception `System.Runtime.CompilerServices.SwitchExpressionException`.
 
+### Definite assignment rules for `switch` expressions
+
+We introduce a new section **`switch` expressions** to the [definite assignment specification](../../spec/variables.md#precise-rules-for-determining-definite-assignment).
+
+For an expression *expr* of the form `input switch { p1 when w1 => e1, p2 when w2 => e2, ..., pn when wn => en }`:
+- The definite assignment state of *v* before *input* is the same as the definite assignment state of *v* before *expr*.
+- The definite assignment state of *v* before *p<sub>i</sub>* is the same as the definite assignment state of *v* after *input*.
+- The definite assignment state of *v* before *w<sub>i</sub>* is determined by:
+  - If the definite assignment state of *v* after *p<sub>i</sub>* is "definitely assigned when true", then the definite assignment state of *v* before *w<sub>i</sub>* is "definitely assigned".
+- The definite assignment state of *v* before *e<sub>i</sub>* is determined by:
+  - If a when clause *w<sub>i</sub>* is present, and the state of *v* after *w<sub>i</sub>* is "definitely assigned when true", then the state of *v* before *e<sub>i</sub>* is "definitely assigned".
+  - Otherwise, if the state of *v* after *p<sub>i</sub>* is "definitely assigned when true", then the state of *v* before *e<sub>i</sub>* is "definitely assigned".
+- The definite assignment state of *v* after *expr* is determined by:
+  - If the definite assignment state of *v* after all arm values *e<sub>1</sub>*...*e<sub>n</sub>* is "definitely assigned", then the definite assignment state of *v* after *expr* is "definitely assigned".
+
+#### Remarks
+
+The `input` is always evaluated before any of the patterns, `when` clauses or arm expressions (i.e. the RHS of the `=>` in the switch expression).  
+Because patterns in `switch` expressions don't generally introduce "definitely assigned when false" state, due to the lack of declaration patterns under `or`/`not` patterns, we use the state from after `input` as the state before each arm of the `switch` expression.  
+If we reach a given arm expression, then the pattern matched, and if present, the when clause evaluated to `true`.  
+If a variable is assigned after all the arm expressions in the switch expression, then it is assigned after the switch expression.  
+
 ### Optional parens when switching on a tuple literal
 
 In order to switch on a tuple literal using the *switch_statement*, you have to write what appear to be redundant parens
