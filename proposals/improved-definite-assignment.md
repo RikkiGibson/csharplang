@@ -262,44 +262,77 @@ This section is meant to address similar scenarios as in the `==`/`!=` section a
 This specification does not address recursive patterns, e.g. `(a?.b(out x), c?.d(out y)) is (object, object)`. Such support may come later if time permits.
 
 ## `switch` expressions
-We introduce a new section **`switch` expressions**.
+We augment the section [`switch` expressions](./csharp-8.0/patterns.md#definite-assignment-rules-for-switch-expressions) as follows:
 
 For an expression *expr* of the form `input switch { p1 when w1 => e1, p2 when w2 => e2, ..., pn when wn => en }`:
-- The definite assignment state of *v* before *input* is the same as the definite assignment state of *v* before *expr*.
-- The definite assignment state of *v* before *p<sub>1</sub>* is the same as the definite assignment state of *v* after *input*.
+- ...
 - The definite assignment state of *v* after *p<sub>i</sub>* is determined by:
   - If *input* directly contains a null-conditional expression, and the state of *v* after the non-conditional counterpart is "definitely assigned", and `p1` is a pattern that only matches a non-null input, then the state of *v* after *p1* is "definitely assigned when true".
   - If *input* directly contains a null-conditional expression, and the state of *v* after the non-conditional counterpart is "definitely assigned", and `p1` is a pattern that only matches a null input, then the state of *v* after *p1* is "definitely assigned when false".
-  - If *input* is of type boolean and *p<sub>i</sub>* is the constant pattern `true`, then the definite assignment state of *v* after *p<sub>i</sub>* is the same as the definite assignment state of *v* after *input*.
-  - If *input* is of type boolean and *p<sub>i</sub>* is the constant pattern `false`, then the definite assignment state of *v* after *p<sub>i</sub>* is the same as the definite assignment state of *v* after the logical negation expression `!input`.
-- The definite assignment state of *v* before *w<sub>i</sub>* is determined by:
-  - If the definite assignment state of *v* after *p<sub>i</sub>* is "definitely assigned when true", then the definite assignment state of *v* before *w<sub>i</sub>* is "definitely assigned".
-- The definite assignment state of *v* before *e<sub>i</sub>* is determined by:
-  - If a when clause *w<sub>i</sub>* is present, and the state of *v* after *w<sub>i</sub>* is "definitely assigned when true", then the state of *v* before *e<sub>i</sub>* is "definitely assigned".
-  - Otherwise, if the state of *v* after *p<sub>i</sub>* is "definitely assigned when true", then the state of *v* before *e<sub>i</sub>* is "definitely assigned".
+  - If *input* is of type boolean and *p<sub>i</sub>* is a pattern which only matches `true`, then the definite assignment state of *v* after *p<sub>i</sub>* is the same as the definite assignment state of *v* after *input*.
+  - If *input* is of type boolean and *p<sub>i</sub>* is a pattern which only matches `false`, then the definite assignment state of *v* after *p<sub>i</sub>* is the same as the definite assignment state of *v* after the logical negation expression `!input`.
 - The definite assignment state of *v* before *p<sub>i</sub>*, where `i > 1`, is determined by:
   - If the definite assignment state of *v* after *p<sub>i-1</sub>* is "definitely assigned when false", then the state of *v* before *p<sub>i</sub>* is "definitely assigned".
 - The definite assignment state of *v* after *expr* is determined by:
-  - If the definite assignment state of *v* after all arm values *e<sub>1</sub>*...*e<sub>n</sub>* is "definitely assigned", then the definite assignment state of *v* after *expr* is "definitely assigned".
-  - If the definite assignment state of *v* after all arm values *e<sub>1</sub>*...*e<sub>n</sub>* is "definitely assigned when true", then the definite assignment state of *v* after *expr* is "definitely assigned when true".
-  - If the definite assignment state of *v* after all arm values *e<sub>1</sub>*...*e<sub>n</sub>* is "definitely assigned when false", then the definite assignment state of *v* after *expr* is "definitely assigned when false".
+  - If the definite assignment state of *v* after all arm expressions *e<sub>1</sub>*...*e<sub>n</sub>* is "definitely assigned", then the definite assignment state of *v* after *expr* is "definitely assigned".
+  - If the definite assignment state of *v* after all arm expressions *e<sub>1</sub>*...*e<sub>n</sub>* is "definitely assigned when true", then the definite assignment state of *v* after *expr* is "definitely assigned when true".
+  - If the definite assignment state of *v* after all arm expressions *e<sub>1</sub>*...*e<sub>n</sub>* is "definitely assigned when false", then the definite assignment state of *v* after *expr* is "definitely assigned when false".
 
 ### Remarks
 
-When visiting a pattern results in a conditional state, we use the "state when true" as the input to the when-clause if it exists, otherwise we use it as input to the arm's value.  
-When visiting a when clause results in a conditional state, we use the "state when true" as the input to the arm's value.  
-When visiting a pattern in subsequent arms, we assume that patterns from the previous arms did not match, and use the "state when false" of the previous pattern as the "state" before the given pattern.
+When visiting a pattern results in a conditional state, we use the "state when true" as the input to the when-clause if it exists, otherwise we use it as input to the arm expression.  
+When visiting a when clause results in a conditional state, we use the "state when true" as the input to the arm expression.  
 
-Similarly to conditional expressions, we join conditional states after each arm's value in order to support patterns like the following:
+When visiting a pattern in subsequent arms, we assume that patterns from the previous arms did not match, and use the "state when false" of the previous pattern as the "state" before the given pattern. This is mainly only applicable for scenarios like the following:  
+`a?.b(out x) switch { null => ..., _ => x.ToString() }`
+
+Similarly to conditional expressions, we join conditional states after each arm expression in order to support patterns like the following:
 - `if (a switch { 1 => M(out x), _ => false }) { x.ToString(); }`
 
-## `switch` expressions
+## `switch` statements
 We augment the section [**switch statements**](../spec/variables.md#switch-statements) as follows:
 
-TODO
+In a `switch` statement *stmt* with a controlling expression *expr*:
+  - ...
+  - The definite assignment state of *v* on the control flow transfer to a reachable switch block statement list *stmts* is determined by:
+    - If *expr* directly contains a null-conditional expression and all switch labels in the switch section only match a non-null input ... (TODO)
 
 ### Remarks
-In order to reach a switch section, we assume that 1 or more of the `case`s in the section would match. 
+In order to reach a switch section, we assume that 1 or more of the `case` labels in the section would match. If *all* the `case` labels in the section match a certain input, we can propagate some state based on the input.
+
+There's potential complexity here related to `goto case`, etc. which we believe is handled already by the existing mechanisms for handling branches. So even if we give a variable a "definitely assigned" based on the input matching some case labels, the presence of a `goto case` in another section should cause us to join states and downgrade that variable back to "not definitely assigned" when appropriate.
+
+A few scenarios of interest:
+
+```cs
+void M(C? c)
+{
+    int x;
+    switch (c?.M0(x = 1))
+    {
+        case "a":
+            // only matches when `c?.M0` returns non-null..right?
+            x.ToString();
+            break;
+        case null:
+            // no, we can reach it in other ways
+            goto case "a";
+    }
+}
+```
+
+```cs
+void M(C c)
+{
+    int x;
+    switch (c != null && c.M0(x = 1))
+    {
+        case true:
+            x.ToString();
+            break;
+    }
+}
+```
 
 # Additional scenarios
 
